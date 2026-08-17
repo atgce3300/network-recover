@@ -1,5 +1,7 @@
 Network-recover
 
+Please read the details below:
+
 if tailscale is connected
 
 tailscale set --accept-dns=false
