@@ -1,107 +1,162 @@
-Network-recover
+# Network Recover
 
-Please read the details below:
+Automated network recovery scripts for Linux systems, especially useful for LXC containers and Tailscale users.
 
-if tailscale is connected
+## Overview
 
+Network connectivity issues can occur due to various reasons such as cable disconnection, DHCP lease expiration, or network interface flaps. This project provides scripts to automatically detect and recover network connectivity.
+
+## Features
+
+- **Automatic DHCP Recovery**: Automatically renews DHCP leases when network is down
+- **Interface Monitoring**: Checks all network interfaces (except loopback and bonding)
+- **WiFi Support**: Handles WiFi interfaces with wpa_supplicant
+- **Tailscale DNS Fix**: Resolves DNS conflicts with Tailscale MagicDNS
+- **LXC Container Support**: Auto-recovers network for running LXC containers
+- **NAT Restoration**: Restores iptables NAT rules for container networking
+
+## Scripts
+
+### 1. net-recover.sh
+
+General network recovery script for any Linux system.
+
+**Usage:**
+```bash
+# Copy to system
+sudo cp net-recover.sh /root/net-recover.sh
+sudo chmod +x /root/net-recover.sh
+
+# Test manually
+sudo /root/net-recover.sh
+
+# Set up cron job (every 15 minutes)
+sudo crontab -e
+*/15 * * * * /root/net-recover.sh
+```
+
+### 2. openclaw-net-recover.sh
+
+Advanced network recovery script designed for Proxmox LXC containers with NAT.
+
+**Usage:**
+```bash
+# Copy to system
+sudo cp openclaw-net-recover.sh /usr/local/bin/openclaw-net-recover
+sudo chmod +x /usr/local/bin/openclaw-net-recover
+
+# Test manually
+sudo /usr/local/bin/openclaw-net-recover
+
+# Set up cron job (every 3 hours)
+sudo crontab -e
+*/3 * * * * /usr/local/bin/openclaw-net-recover
+```
+
+## Problem Solved
+
+### The DHCP Lease Issue
+
+When a network cable is unplugged and plugged back:
+
+1. The DHCP lease is not automatically released
+2. The interface may show no IP address in `ip a`
+3. Internet remains disconnected even though the cable is connected
+
+### The Solution
+
+This script:
+1. Checks if the network interface is UP
+2. Always releases the DHCP lease before requesting a new IP
+3. Kills any existing dhclient process
+4. Flushes the old IP address
+5. Requests a fresh IP via DHCP
+
+## Supported Systems
+
+| System | Support |
+|--------|---------|
+| Debian/Ubuntu | ✅ |
+| Raspberry Pi | ✅ |
+| Proxmox LXC | ✅ |
+| Alpine Linux | ✅ (via DNS config) |
+| Tailscale | ✅ (DNS fix) |
+
+## Tailscale DNS Configuration
+
+If using Tailscale, you may need to disable MagicDNS to prevent DNS conflicts:
+
+```bash
+# Disable Tailscale DNS
 tailscale set --accept-dns=false
+```
 
-In crontab 
-crontab -e 
+## Alpine Linux DNS Configuration
 
-#*/15 * * * * /root/net-recover.sh >> /root/net-recover.log 2>&1
-*/15 * * * * /root/net-recover.sh 2>&1
+For Alpine Linux LXC containers:
 
-In running lxc container run once
-
-cat > /etc/systemd/network/eth0-dns.conf << 'EOF'
-[Network]
-DNS=8.8.8.8
-DNS=8.8.4.4
-EOF
-systemctl restart systemd-networkd
-
-
-openclaw-network-recover
-
-In crontab 
-crontab -e 
-
-#* */3 * * * /root/openclaw-net-recover.sh >> /root/opencalw-net-recover.log 2>&1
-* */3 * * * /root/openclaw-net-recover.sh 2>&1
-
-Or
-crontab -e
-
-* */3 * * * root /usr/local/bin/openclaw-net-recover
-
-For Alpine lxc container
-
-Alpine doesn't use systemd or systemd-networkd — it uses OpenRC. Here's the Alpine way to persist DNS:
-# 1. Stop udhcpc from overwriting resolv.conf
+```bash
+# Stop udhcpc from overwriting resolv.conf
 echo 'RESOLV_CONF="NO"' >> /etc/udhcpc/udhcpc.conf
 
-# 2. Set static DNS
-cat > /etc/resolv.conf << 'EOF'
-nameserver 8.8.8.8
-nameserver 1.1.1.1
-EOF
+# Set static DNS
+echo "nameserver 8.8.8.8" > /etc/resolv.conf
+echo "nameserver 1.1.1.1" >> /etc/resolv.conf
 
-# 3. Lock it down (optional but safe)
-chattr +i /etc/resolv.conf
-Alternative — configure via interfaces (cleaner, no chattr needed):
-cat > /etc/network/interfaces << 'EOF'
-auto lo
-iface lo inet loopback
-
-auto eth0
-iface eth0 inet dhcp
-EOF
-
-# Then reboot or:
-/etc/init.d/networking restart
-Actually the simplest one-liner for a run-once LXC:
-bash
-echo 'RESOLV_CONF="NO"' >> /etc/udhcpc/udhcpc.conf && echo -e "nameserver 8.8.8.8\nnameserver 1.1.1.1" > /etc/resolv.conf && chattr +i /etc/resolv.conf
-The key Alpine-specific piece is RESOLV_CONF="NO" in udhcpc.conf — that's what stops the DHCP client from blowing away your DNS every renew.
-Oc
-—
-10:59 PM
-tailscale:~# echo 'RESOLV_CONF="NO"' >> /etc/udhcpc/udhcpc.conf && echo -e "name server 8.8.8.8\nnameserver 1.1.1.1" > /etc/resolv.conf && chattr +i /etc/resolv. conf chattr: setting flags on /etc/resolv.conf: Operation not permitted tailscale:~#
-
-
-chattr +i needs CAP_LINUX_IMMUTABLE which LXC containers don't have by default. But it's not strictly needed — RESOLV_CONF="NO" already stops udhcpc from overwriting it. That's the real fix on Alpine. So just:
-echo 'RESOLV_CONF="NO"' >> /etc/udhcpc/udhcpc.conf
-echo -e "nameserver 8.8.8.8\nnameserver 1.1.1.1" > /etc/resolv.conf
-Then verify it survives a DHCP renew:
-# Force a renew to test
+# Test
 udhcpc -n -i eth0
 cat /etc/resolv.conf
-Should still show 8.8.8.8 and 1.1.1.1. If it does, you're good without chattr. But also check Tailscale's own DNS — it can override resolv.conf too:
-tailscale dns status
-If Tailscale MagicDNS is pushing its own resolvers, either:
-Disable it: tailscale set --accept-dns=false
-Or set your preferred nameservers in the Tailscale admin console under DNS settings
-One of those two (udhcpc or Tailscale) is the culprit nuking your resolv.conf.
+```
 
+## Troubleshooting
 
+### No network after cable plug
 
-echo 'RESOLV_CONF="NO"' >> /etc/udhcpc/udhcpc.conf
-echo -e "nameserver 8.8.8.8\nnameserver 1.1.1.1" > /etc/resolv.conf
+Run the recovery script manually:
+```bash
+sudo /root/net-recover.sh
+```
 
-udhcpc -n -i eth0
-cat /etc/resolv.conf
+### Check logs
+```bash
+# net-recover.sh logs
+cat ~/net-recover.log
 
-tailscale dns status
+# openclaw-net-recover.sh logs
+cat ~/openclaw-net-recover.log
+```
 
-tailscale set --accept-dns=false
+### Check interface status
+```bash
+ip a
+ip link show
+```
 
-To resolve name resolution error
+### Check DHCP status
+```bash
+dhclient -v <interface>
+```
 
-tailscale set --accept-dns=false
+## Configuration
 
-add
-nameserver 8.8.8.8
+### For openclaw-net-recover.sh
 
-at the end of  cat /etc/resolv.conf
+Edit the script to match your network configuration:
 
+```bash
+LOCAL_ROUTE="192.168.1.192/26"    # Your local route
+LXC_GATEWAY="10.10.1.193"         # Your LXC gateway
+ACTIVE_IFACE="wlxe0ad4732de36"    # Your active network interface
+```
+
+## Contributing
+
+Contributions are welcome! Please feel free to submit a Pull Request.
+
+## License
+
+MIT License
+
+## Author
+
+Created to solve network connectivity issues in home lab environments.
