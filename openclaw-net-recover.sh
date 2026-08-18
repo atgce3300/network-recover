@@ -13,7 +13,7 @@ ACTIVE_IFACE="wlxe0ad4732de36" # Save the working interface
  
 # ── 0. Bring ALL network interfaces up ──
 # ── 1. Recover DHCP if IP is missing ──
-# ── 2. Force release DHCP lease if internet is down but IP exists ──
+# ── 2. Always release DHCP lease before requesting new IP ──
 
 
 echo "[$(date '+%Y-%m-%d %H:%M:%S')] Checking all interfaces..." | tee -a "$LOGFILE"
@@ -21,6 +21,9 @@ echo "[$(date '+%Y-%m-%d %H:%M:%S')] Checking all interfaces..." | tee -a "$LOGF
 
 # Get all network interfaces (exclude loopback AND bonding)
 for IFACE in $(ls /sys/class/net/ | grep -v '^lo$\|^bond'); do
+    # Check if interface is UP
+    STATE=$(cat /sys/class/net/$IFACE/operstate 2>/dev/null)
+    
     # Check if interface has IP
     if ip addr show "$IFACE" 2>/dev/null | grep -q 'inet '; then
         IP=$(ip addr show "$IFACE" | grep 'inet ' | awk '{print $2}')
@@ -32,31 +35,27 @@ for IFACE in $(ls /sys/class/net/ | grep -v '^lo$\|^bond'); do
         else
             # Internet is down but IP exists - force DHCP renew
             echo "[$(date '+%Y-%m-%d %H:%M:%S')] $IFACE: $IP exists but no internet - forcing DHCP renew..." | tee -a "$LOGFILE"
-            
-            # Kill existing dhclient
-            pkill -9 dhclient 2>/dev/null
-            sleep 1
-            
-            # Release DHCP lease
-            dhclient -r "$IFACE" 2>/dev/null
-            sleep 1
-            
-            # Flush IP address
-            ip addr flush dev "$IFACE" 2>/dev/null
-            sleep 1
         fi
     else
-        # THIS interface has no IP — recover it
+        # No IP - recover it
         echo "[$(date '+%Y-%m-%d %H:%M:%S')] $IFACE: No IP — recovering..." | tee -a "$LOGFILE"
     fi
 
-    # ONLY bring UP if it's down - with timeout
-    STATE=$(cat /sys/class/net/$IFACE/operstate 2>/dev/null)
+    # Bring UP if down
     if [ "$STATE" = "down" ] || [ "$STATE" = "dormant" ]; then
         timeout 10 ip link set "$IFACE" up 2>/dev/null || ip link set "$IFACE" up 2>/dev/null &
         sleep 1
     fi
 
+    # ── ALWAYS release DHCP lease before requesting new IP ──
+    # This is critical when cable was unplugged and plugged back
+    echo "[$(date '+%Y-%m-%d %H:%M:%S')] $IFACE: Releasing DHCP lease..." | tee -a "$LOGFILE"
+    pkill -9 dhclient 2>/dev/null
+    sleep 1
+    dhclient -r "$IFACE" 2>/dev/null
+    sleep 1
+    ip addr flush dev "$IFACE" 2>/dev/null
+    sleep 1
 
     # WiFi = restart wpa_supplicant
     if [[ "$IFACE" == wlx* ]]; then
@@ -69,8 +68,8 @@ for IFACE in $(ls /sys/class/net/ | grep -v '^lo$\|^bond'); do
         timeout 15 dhclient -v "$IFACE" 2>&1 | tee -a "$LOGFILE"
         sleep 3 
     else
-        # Ethernet - just try DHCP (don't wait long)
-        echo "[$(date '+%Y-%m-%d %H:%M:%S')] $IFACE: trying DHCP..." | tee -a "$LOGFILE"
+        # Ethernet - try DHCP
+        echo "[$(date '+%Y-%m-%d %H:%M:%S')] $IFACE: requesting new IP via DHCP..." | tee -a "$LOGFILE"
         timeout 15 dhclient "$IFACE" 2>&1 | tee -a "$LOGFILE"
         sleep 2
     fi
