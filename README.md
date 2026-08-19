@@ -53,25 +53,6 @@ sudo crontab -e
 */3 * * * * /usr/local/bin/openclaw-net-recover
 ```
 
-## Problem Solved
-
-### The DHCP Lease Issue
-
-When a network cable is unplugged and plugged back:
-
-1. The DHCP lease is not automatically released
-2. The interface may show no IP address in `ip a`
-3. Internet remains disconnected even though the cable is connected
-
-### The Solution
-
-This script:
-1. Checks if the network interface is UP
-2. Always releases the DHCP lease before requesting a new IP
-3. Kills any existing dhclient process
-4. Flushes the old IP address
-5. Requests a fresh IP via DHCP
-
 ## Supported Systems
 
 | System | Support |
